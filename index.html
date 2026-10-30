@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GuppyLM, explained — how a 9M-parameter model learns to be a fish</title>
+<meta name="description" content="A visual, hands-on explanation of GuppyLM: where its synthetic training data comes from, how tokenization works, what a transformer computes, and what training actually changes. Built for engineers who have not trained a model before.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 32'%3E%3Cpath d='M6 16c6-8 20-11 30-6l6-6v24l-6-6c-10 5-24 2-30-6Z' fill='%23d9772f'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+<script>
+  (function () {
+    try {
+      var saved = localStorage.getItem('guppy-theme');
+      if (saved === 'light' || saved === 'dark') document.documentElement.setAttribute('data-theme', saved);
+      else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.setAttribute('data-theme', 'dark');
+    } catch (e) {}
+  })();
+</script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="read-progress" aria-hidden="true"><span id="read-progress-bar"></span></div>
+
+<header class="topbar">
+  <button class="icon-btn menu-btn" id="menu-btn" type="button" aria-label="Open chapter menu" aria-expanded="false" aria-controls="sidebar">
+    <span class="menu-lines" aria-hidden="true"></span>
+  </button>
+  <a class="brand" href="#top">
+    <svg class="brand-fish" viewBox="0 0 48 32" aria-hidden="true">
+      <path d="M6 16c6-8 20-11 30-6l6-6v24l-6-6c-10 5-24 2-30-6Z" fill="currentColor" opacity=".9"/>
+      <circle cx="15" cy="14" r="2.1" fill="var(--bg)"/>
+    </svg>
+    <span>GuppyLM <em>explained</em></span>
+  </a>
+  <div class="topbar-actions">
+    <a class="ghost-link" href="https://github.com/arman-bd/guppylm" target="_blank" rel="noopener">Source repo</a>
+    <button class="icon-btn theme-btn" id="theme-btn" type="button" aria-label="Switch color theme">
+      <span class="theme-icon" aria-hidden="true"></span>
+    </button>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar" id="sidebar">
+    <nav aria-label="Chapters">
+      <p class="nav-label">Contents</p>
+      <ol class="toc">
+        <li><a href="#overview" data-section="overview"><span>00</span>The whole picture</a></li>
+        <li><a href="#data" data-section="data"><span>01</span>Where the data comes from</a></li>
+        <li><a href="#tokens" data-section="tokens"><span>02</span>Text becomes integers</a></li>
+        <li><a href="#model" data-section="model"><span>03</span>What the model computes</a></li>
+        <li><a href="#learning" data-section="learning"><span>04</span>How numbers get better</a></li>
+        <li><a href="#training" data-section="training"><span>05</span>One training step</a></li>
+        <li><a href="#generation" data-section="generation"><span>06</span>From weights to a reply</a></li>
+        <li><a href="#limits" data-section="limits"><span>07</span>Results and limits</a></li>
+        <li><a href="#glossary" data-section="glossary"><span>08</span>Glossary</a></li>
+        <li><a href="#quiz" data-section="quiz"><span>09</span>Check yourself</a></li>
+      </ol>
+    </nav>
+    <div class="sidebar-note">
+      <p>Every number and model output on this page was extracted from the real repo, dataset, tokenizer, and published checkpoint.</p>
+      <a href="https://huggingface.co/arman-bd/guppylm-9M" target="_blank" rel="noopener">Published model on Hugging Face</a>
+    </div>
+  </aside>
+  <div class="nav-backdrop" id="nav-backdrop"></div>
+
+  <main id="main" class="content">
+    <section class="hero" id="top">
+      <div class="bubbles" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <p class="eyebrow">A from-scratch language model, explained</p>
+      <h1>How a 9-million-parameter model learns to be a fish</h1>
+      <p class="lede">GuppyLM is a tiny language model that talks like a small, friendly, slightly confused guppy. This guide starts with the whole pipeline in one picture, then goes deep into each stage. No prior machine-learning experience assumed — just comfort with code, arrays, and loops.</p>
+      <div class="stat-grid">
+        <div class="stat"><b class="num" data-count="8726016" data-format="int">8,726,016</b><span>learned parameters</span></div>
+        <div class="stat"><b class="num">60,000</b><span>synthetic conversations</span></div>
+        <div class="stat"><b class="num">128</b><span>token context window</span></div>
+        <div class="stat"><b class="num">2,418</b><span>real tokens in vocab</span></div>
+        <div class="stat"><b class="num">0.407</b><span>held-out loss (ppl 1.50)</span></div>
+      </div>
+      <div class="hero-actions">
+        <a class="btn primary" href="#overview">Start with the 30-second version</a>
+        <a class="btn" href="#glossary">Jump to the glossary</a>
+      </div>
+      <p class="hero-foot">Real attention weights, real next-token probabilities, and a real 500-step training curve appear below. Nothing is a mock-up.</p>
+    </section>
+
+    <section id="overview" class="chapter">
+      <p class="chapter-kicker">00 · Orientation</p>
+      <h2>The whole thing in one picture</h2>
+      <p>Training a language model is a loop with five stages. In GuppyLM, each stage is a small Python file you can read in one sitting.</p>
+
+      <div class="pipeline" role="tablist" aria-label="The five stages of the GuppyLM pipeline">
+        <button class="pipe-step active" type="button" role="tab" aria-selected="true" aria-controls="pipe-panel" data-pipe="data">
+          <span class="pipe-num">1</span><span class="pipe-title">Data</span><span class="pipe-file">generate_data.py</span>
+        </button>
+        <button class="pipe-step" type="button" role="tab" aria-selected="false" aria-controls="pipe-panel" data-pipe="tokenizer">
+          <span class="pipe-num">2</span><span class="pipe-title">Tokenizer</span><span class="pipe-file">prepare_data.py</span>
+        </button>
+        <button class="pipe-step" type="button" role="tab" aria-selected="false" aria-controls="pipe-panel" data-pipe="model">
+          <span class="pipe-num">3</span><span class="pipe-title">Model</span><span class="pipe-file">model.py</span>
+        </button>
+        <button class="pipe-step" type="button" role="tab" aria-selected="false" aria-controls="pipe-panel" data-pipe="train">
+          <span class="pipe-num">4</span><span class="pipe-title">Training</span><span class="pipe-file">train.py</span>
+        </button>
+        <button class="pipe-step" type="button" role="tab" aria-selected="false" aria-controls="pipe-panel" data-pipe="infer">
+          <span class="pipe-num">5</span><span class="pipe-title">Inference</span><span class="pipe-file">inference.py</span>
+        </button>
+      </div>
+      <div class="pipe-panel" id="pipe-panel" role="tabpanel" aria-live="polite"></div>
+
+      <div class="callout insight">
+        <p class="callout-title">The one sentence to remember</p>
+        <p>Training is repeatedly showing the model a sequence of tokens, asking it to guess the next token, measuring how wrong it was, and nudging every weight in the direction that makes the correct guess a little more likely.</p>
+      </div>
+
+      <h3>Background: what “model” and “training” mean here</h3>
+      <p>A <strong>model</strong> is just a function with a very large number of adjustable numbers inside it, called <strong>weights</strong> or <strong>parameters</strong>. You give it integers (token IDs) and it gives you scores for what should come next. At the start those numbers are random, so the scores are nonsense. <strong>Training</strong> is the process of choosing better numbers by looking at examples.</p>
+      <p>There is no database of facts inside the model and no rules written by hand. The only thing that changes during training is the value of those 8,726,016 numbers. Everything the fish “knows” is a pattern encoded in them.</p>
+
+      <div class="callout engineer">
+        <p class="callout-title">Engineer’s translation</p>
+        <p>Think of a model as a function <code>f(ids) → scores</code> with 8.7M tunable constants. Training is fitting those constants to data by gradient descent. Inference is calling the function.</p>
+      </div>
+    </section>
+
+    <section id="data" class="chapter">
+      <p class="chapter-kicker">01 · Data</p>
+      <h2>Where the training data comes from</h2>
+      <p class="lead">Short answer: it is generated by a Python script in the repository. There is no web scrape, no book corpus, no chat logs, and no human labelers.</p>
+
+      <p>The file <code>guppylm/generate_data.py</code> contains hand-written vocabulary pools and templates. A pool is just a list of strings. A template is a function that picks one string from a few pools and glues them together. Run the function 60,000 times and you have a dataset.</p>
+
+      <h3>Background: supervised learning in one paragraph</h3>
+      <p>Most language-model training is <strong>supervised</strong>: you have examples of an input and the output you want. For a chat model the example is a user message and the assistant reply. The learning algorithm is never told “be friendly” or “answer in lowercase”; it only sees thousands of concrete (input, reply) pairs and is asked to make each reply more likely given its input. Style and personality emerge from the examples.</p>
+
+      <div class="demo" id="data-demo">
+        <div class="demo-head">
+          <div>
+            <h3>Draw a real training sample</h3>
+            <p>These 300 conversations are a stratified sample of the actual generated dataset — five per topic, all 60 topics.</p>
+          </div>
+          <button class="btn primary" id="sample-btn" type="button">Draw a sample</button>
+        </div>
+        <div class="chat-sample" aria-live="polite">
+          <div class="chat-row user">
+            <span class="chat-role">User</span>
+            <p id="sample-input">Click “Draw a sample”.</p>
+          </div>
+          <div class="chat-row fish">
+            <span class="chat-role">Guppy</span>
+            <p id="sample-output">—</p>
+          </div>
+        </div>
+        <p class="demo-foot">Topic: <span class="pill" id="sample-category">—</span> <span class="muted" id="sample-count"></span></p>
+      </div>
+
+      <h3>How one reply is assembled</h3>
+      <p>This is the actual greeting generator. It picks one opener, one middle, and an optional extra. Every piece is drawn independently, which is why the same template can produce thousands of different sentences.</p>
+
+      <div class="demo" id="recombine-demo">
+        <div class="demo-head">
+          <div>
+            <h3>Recombine a greeting yourself</h3>
+            <p>Choose one fragment from each pool. The result is exactly the kind of sentence the generator writes.</p>
+          </div>
+        </div>
+        <div class="recombine-controls">
+          <label class="field">
+            <span>Opener</span>
+            <select id="rec-opener"></select>
+          </label>
+          <label class="field">
+            <span>Middle</span>
+            <select id="rec-middle"></select>
+          </label>
+          <label class="field">
+            <span>Extra</span>
+            <select id="rec-extra"></select>
+          </label>
+        </div>
+        <div class="assembled" aria-live="polite">
+          <span class="frag frag-a" id="frag-a"></span>
+          <span class="frag frag-b" id="frag-b"></span>
+          <span class="frag frag-c" id="frag-c"></span>
+        </div>
+        <p class="demo-foot">The real script uses the same three-slot pattern for all 60 topics, with different pools and different numbers of slots.</p>
+      </div>
+
+      <h3>The pools behind the sentences</h3>
+      <p>The generator defines the fish’s entire world in a handful of lists: 28 tank objects, 20 locations, 17 foods, 25 activities, 16 water descriptions, 10 light states, body parts, sounds, and 31 human concepts used to make Guppy confused. The narrowness is deliberate — it keeps the character consistent.</p>
+
+      <div class="data-facts">
+        <div class="fact"><b>60</b><span>topics, exactly 1,000 samples each</span></div>
+        <div class="fact"><b>57,000 / 3,000</b><span>train / held-out split (95/5)</span></div>
+        <div class="fact"><b>11,611</b><span>unique Guppy replies (19.4%)</span></div>
+        <div class="fact"><b>16,291</b><span>unique full conversations (27.2%)</span></div>
+      </div>
+
+      <p>That last pair of numbers matters. About four out of five replies are duplicates or near-duplicates of another reply. The model is not learning 60,000 independent facts; it is learning a compact, repetitive distribution over a small vocabulary of sentence shapes.</p>
+
+      <h3>Why synthetic data?</h3>
+      <p>The author’s stated reason is personality consistency: a real corpus would teach the model to sound like Wikipedia, Reddit, or code, and the fish voice would be diluted. Synthetic data also means no licensing questions, no cleaning pipeline, and a dataset small enough to generate in seconds. The cost is a model that is fluent only inside its tiny world.</p>
+
+      <div class="callout engineer">
+        <p class="callout-title">Engineer’s translation</p>
+        <p>A dataset is a list of examples. Here each example is <code>{input, output, category}</code>. The generator is deterministic given a seed, so anyone can reproduce the exact dataset with <code>python -m guppylm.generate_data</code>.</p>
+      </div>
+    </section>
+
+    <section id="tokens" class="chapter">
+      <p class="chapter-kicker">02 · Tokenization</p>
+      <h2>Text becomes integers</h2>
+      <p class="lead">Neural networks do arithmetic. Before anything else, text has to become a sequence of integers. That conversion is the tokenizer, and it is trained on the same data as the model.</p>
+
+      <h3>Background: why not feed in characters?</h3>
+      <p>You could. Characters would make sequences very long (one ID per letter) and the model would spend most of its capacity learning to spell. You could also feed in whole words, but then any typo or new word becomes an “unknown” token. <strong>Byte-pair encoding (BPE)</strong> is the middle ground: common words become one token, rare words are split into meaningful pieces, and because it starts from raw bytes, any string is representable.</p>
+
+      <h3>How BPE is learned</h3>
+      <p>Start with every byte as its own symbol. Count adjacent pairs across the corpus. Merge the most frequent pair into a new symbol. Repeat. Each merge is recorded in order. To tokenize new text, apply the same merges in the same order. GuppyLM’s tokenizer learned 2,352 merges.</p>
+      <p>The vocabulary was requested as 4,096 entries, but the corpus only supported 2,418 real tokens before the frequency threshold stopped it. The model still allocates 4,096 embedding rows; the unused rows are simply never predicted. This is a normal BPE detail, not a bug.</p>
+
+      <div class="demo" id="token-demo">
+        <div class="demo-head">
+          <div>
+            <h3>Tokenize text with the real tokenizer</h3>
+            <p>Type anything. The chips are the exact tokens from the published <code>tokenizer.json</code>; the numbers are the IDs the model sees. <span aria-hidden="true">·</span> marks a leading space and <span aria-hidden="true">↵</span> a newline.</p>
+          </div>
+        </div>
+        <div class="preset-row" id="token-presets">
+          <button class="chip-btn" type="button" data-text="hello. the water is nice today.">a fish sentence</button>
+          <button class="chip-btn" type="button" data-text="hi guppy">greeting</button>
+          <button class="chip-btn" type="button" data-text="are you hungry">question</button>
+          <button class="chip-btn" type="button" data-text="temperature">one long word</button>
+          <button class="chip-btn" type="button" data-text="&lt;|im_start|&gt;user&#10;hi guppy&lt;|im_end|&gt;&#10;&lt;|im_start|&gt;assistant&#10;hello.&lt;|im_end|&gt;">full ChatML prompt</button>
+        </div>
+        <label class="field full">
+          <span>Text</span>
+          <textarea id="token-input" rows="3" spellcheck="false">hello. the water is nice today.</textarea>
+        </label>
+        <div class="token-output" id="token-output" aria-live="polite"></div>
+        <p class="demo-foot" id="token-stats">—</p>
+      </div>
+
+      <h3>Watch a word get merged</h3>
+      <p>The tokenizer does not split on spaces the way you might expect. A leading space is part of the next token (shown as <span aria-hidden="true">·</span> here), and frequent chunks are merged. Step through the merges for a word.</p>
+
+      <div class="demo" id="merge-demo">
+        <div class="merge-controls">
+          <label class="field">
+            <span>Word</span>
+            <input id="merge-word" type="text" value="guppy" spellcheck="false" maxlength="24">
+          </label>
+          <div class="merge-buttons">
+            <button class="btn" id="merge-prev" type="button">Previous</button>
+            <button class="btn primary" id="merge-next" type="button">Next merge</button>
+          </div>
+        </div>
+        <div class="merge-stage" id="merge-stage" aria-live="polite"></div>
+        <p class="demo-foot" id="merge-caption">—</p>
+      </div>
+
+      <h3>Why tokenization changes the answer</h3>
+      <p>Here is a real example from the published checkpoint. The model was asked to continue <code>i feel</code>. Then it was asked to continue <code>i feel </code> — with one trailing space. The space becomes its own token, and the context becomes one the model almost never saw during training.</p>
+      <div class="two-up">
+        <div class="mini-demo">
+          <p class="mini-title"><code>i feel</code></p>
+          <div id="space-a" class="next-bars"></div>
+        </div>
+        <div class="mini-demo">
+          <p class="mini-title"><code>i feel </code> (trailing space)</p>
+          <div id="space-b" class="next-bars"></div>
+        </div>
+      </div>
+      <p>Without the space, the model predicts “a”, “curious”, “not”, “happy”, “ok”, “peaceful” — all plausible continuations. With the space, it is nearly certain the next token is a period, because the rare trailing-space token pushes the context off-distribution. Tokenization is not a preprocessing detail you can ignore.</p>
+
+      <div class="callout engineer">
+        <p class="callout-title">Engineer’s translation</p>
+        <p>The tokenizer is a lossless compression scheme learned from your corpus. The model never sees characters or words — only integer IDs. Two strings that look identical to you can be different token sequences to the model.</p>
+      </div>
+    </section>
+
+    <section id="model" class="chapter">
+      <p class="chapter-kicker">03 · The model</p>
+      <h2>What the 8.7 million numbers actually do</h2>
+      <p class="lead">GuppyLM is a “vanilla” transformer: six identical blocks, each with attention and a small feed-forward network. No exotic variants. That makes it a good specimen for learning the machinery.</p>
+
+      <h3>Background: vectors, matrices, and tensors</h3>
+      <p>A <strong>vector</strong> is a list of numbers. A <strong>matrix</strong> is a 2D grid of numbers. A <strong>tensor</strong> is the general term for an n-dimensional grid. A matrix multiply is the core operation: it takes a vector and produces a new vector by combining its entries with learned weights. If you have written <code>y = W @ x + b</code> in code, you already know the main primitive of a neural network.</p>
+
+      <h3>The forward pass, stage by stage</h3>
+      <p>Click a stage to see the exact tensor shapes for GuppyLM. Shapes are written as <code>[batch, sequence, features]</code>; for one prompt the batch is 1.</p>
+
+      <div class="shape-flow" id="shape-flow" role="tablist" aria-label="Forward pass stages">
+        <button class="shape-step active" type="button" role="tab" aria-selected="true" aria-controls="shape-panel" data-shape="ids">token IDs</button>
+        <button class="shape-step" type="button" role="tab" aria-selected="false" aria-controls="shape-panel" data-shape="embed">embeddings</button>
+        <button class="shape-step" type="button" role="tab" aria-selected="false" aria-controls="shape-panel" data-shape="attn">attention</button>
+        <button class="shape-step" type="button" role="tab" aria-selected="false" aria-controls="shape-panel" data-shape="ffn">feed-forward</button>
+        <button class="shape-step" type="button" role="tab" aria-selected="false" aria-controls="shape-panel" data-shape="logits">logits</button>
+        <button class="shape-step" type="button" role="tab" aria-selected="false" aria-controls="shape-panel" data-shape="softmax">probabilities</button>
+      </div>
+      <div class="shape-panel" id="shape-panel" role="tabpanel" aria-live="polite"></div>
+
+      <h3>Embeddings: turning an ID into a vector</h3>
+      <p>The token embedding is a lookup table with one row per vocabulary slot: <code>4096 × 384</code>. Token ID 779 selects row 779, a vector of 384 numbers. A second table, <code>128 × 384</code>, encodes position, because attention by itself has no sense of order. The two vectors are added.</p>
+      <p>Those 384 numbers per token are not human-interpretable features. They are learned coordinates. Training arranges them so that tokens used in similar ways end up in similar regions, because that makes prediction easier.</p>
+
+      <h3>Attention: each token chooses what to read</h3>
+      <p>For every token, the block computes three vectors: a <strong>query</strong> (what am I looking for?), a <strong>key</strong> (what do I offer?), and a <strong>value</strong> (what information do I carry?). The score between a query and a key is their dot product. Scores are divided by <code>√64</code> to keep them from getting too large, masked so a token cannot see the future, and passed through <strong>softmax</strong>, which turns them into weights that sum to 1. The output is the weighted sum of the value vectors.</p>
+      <p>With 6 heads, the block does this six times in parallel with 64-dimensional subspaces, then concatenates the results. Different heads can specialize: one might track the previous word, another the topic, another punctuation.</p>
+
+      <div class="demo" id="attn-demo">
+        <div class="demo-head">
+          <div>
+            <h3>Real attention from the published model</h3>
+            <p>Rows are the token doing the looking (query); columns are the tokens being read (key). Each row sums to 1. The upper-right triangle is zero because of the causal mask.</p>
+          </div>
+        </div>
+        <div class="attn-controls">
+          <div class="seg" id="attn-layers" role="group" aria-label="Layer">
+            <button class="seg-btn" type="button" data-layer="0">Layer 1</button>
+            <button class="seg-btn" type="button" data-layer="2">Layer 3</button>
+            <button class="seg-btn active" type="button" data-layer="5">Layer 6</button>
+          </div>
+          <label class="field">
+            <span>Head</span>
+            <select id="attn-head">
+              <option value="avg">average of 6 heads</option>
+              <option value="0">head 1</option>
+              <option value="1">head 2</option>
+              <option value="2">head 3</option>
+              <option value="3">head 4</option>
+              <option value="4">head 5</option>
+              <option value="5">head 6</option>
+            </select>
+          </label>
+        </div>
+        <div class="attn-wrap">
+          <div class="attn-grid" id="attn-grid" aria-live="polite"></div>
+          <div class="attn-tooltip" id="attn-tooltip" role="status"></div>
+        </div>
+        <p class="demo-foot" id="attn-caption">—</p>
+        <p class="demo-foot muted">Head detail is available for layer 6; layers 1 and 3 show the 6-head average. Values are from a real forward pass, rounded to four decimals. <span aria-hidden="true">·</span> marks a leading space.</p>
+      </div>
+
+      <h3>Feed-forward, residual, and normalization</h3>
+      <p>After attention, each token passes through a small two-layer network on its own: <code>384 → 768 → 384</code> with a ReLU. This is where most of the per-token computation happens. Both attention and the feed-forward are wrapped in <strong>residual connections</strong> (<code>x = x + f(x)</code>), which give gradients a short path back through the network, and preceded by <strong>LayerNorm</strong>, which rescales each token’s vector to a stable range.</p>
+      <p><strong>Dropout</strong> randomly zeroes 10% of activations during training. It is a regularizer: it prevents the model from relying too heavily on any single pathway. It is switched off at inference.</p>
+
+      <h3>The output layer</h3>
+      <p>After six blocks and a final LayerNorm, a linear layer maps each 384-dimensional vector to 4,096 scores, one per vocabulary slot. These raw scores are <strong>logits</strong>. Softmax turns them into probabilities. The final linear layer shares its weight matrix with the token embedding table (“weight tying”), which saves 1.57M parameters and is a common trick.</p>
+
+      <h3>Where the parameters live</h3>
+      <p>This is the complete accounting of the 8,726,016 parameters. The six transformer blocks hold 81% of them; the embedding tables hold almost all the rest.</p>
+      <div class="param-block">
+        <div class="param-bar" aria-hidden="true">
+          <span class="pb pb-blocks" style="width:81.4%"></span>
+          <span class="pb pb-tok" style="width:18.0%"></span>
+          <span class="pb pb-pos" style="width:0.56%"></span>
+          <span class="pb pb-norm" style="width:0.04%"></span>
+        </div>
+        <div class="legend">
+          <span><i class="sw sw-blocks"></i>6 blocks · 7,103,232</span>
+          <span><i class="sw sw-tok"></i>token embeddings · 1,572,864</span>
+          <span><i class="sw sw-pos"></i>position · 49,152</span>
+          <span><i class="sw sw-norm"></i>final norm · 768</span>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr><th>Component</th><th class="num">Parameters</th><th>Shape / note</th></tr></thead>
+          <tbody>
+            <tr><td>Token embedding</td><td class="num">1,572,864</td><td>4096 × 384, tied to output layer</td></tr>
+            <tr><td>Position embedding</td><td class="num">49,152</td><td>128 × 384, learned</td></tr>
+            <tr><td>Per block: QKV</td><td class="num">443,520</td><td>384 → 1152, plus bias</td></tr>
+            <tr><td>Per block: attention out</td><td class="num">147,840</td><td>384 → 384</td></tr>
+            <tr><td>Per block: FFN up</td><td class="num">295,680</td><td>384 → 768</td></tr>
+            <tr><td>Per block: FFN down</td><td class="num">295,296</td><td>768 → 384</td></tr>
+            <tr><td>Per block: 2 LayerNorms</td><td class="num">1,536</td><td>384 scale + 384 shift each</td></tr>
+            <tr><td>6 blocks, total</td><td class="num">7,103,232</td><td>6 × 1,183,872</td></tr>
+            <tr><td>Final LayerNorm</td><td class="num">768</td><td>—</td></tr>
+            <tr><td>LM head</td><td class="num">0</td><td>weight-tied to token embedding</td></tr>
+            <tr class="total"><td>Total</td><td class="num">8,726,016</td><td>8.7M</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout engineer">
+        <p class="callout-title">Engineer’s translation</p>
+        <p>Attention is a learned routing table: each token computes a weighted average of earlier tokens. The feed-forward network is a per-token calculator. A block is <code>x = x + attention(norm(x)); x = x + ffn(norm(x))</code>. Repeat six times, project to vocabulary size, softmax.</p>
+      </div>
+    </section>
+
+    <section id="learning" class="chapter">
+      <p class="chapter-kicker">04 · Learning</p>
+      <h2>How the numbers get better</h2>
+      <p class="lead">The model’s only job during training is to predict the next token. Everything else — grammar, tone, the fish personality — is a side effect of getting good at that one task.</p>
+
+      <h3>Background: next-token prediction</h3>
+      <p>Take a training string. At every position, the model sees the tokens before that position and outputs a probability for every token in the vocabulary. The correct next token is known because it is literally the next token in the string. The model is rewarded for putting high probability on it.</p>
+      <p>GuppyLM trains on the whole ChatML string, including the user turn and the special tokens. It is not told to ignore the user’s words; it learns to predict those too. That is simpler than masking the prompt, and it works fine at this scale.</p>
+
+      <h3>The loss: turning “how wrong” into one number</h3>
+      <p><strong>Cross-entropy loss</strong> for one position is <code>-ln(p)</code>, where <code>p</code> is the probability the model assigned to the correct token. If the model is confident and right, the loss is near zero. If it gives the correct token 1% probability, the loss is about 4.6. The training loss is the average over all non-padding positions.</p>
+
+      <div class="demo" id="loss-demo">
+        <div class="demo-head">
+          <div>
+            <h3>Feel the shape of cross-entropy</h3>
+            <p>Drag the probability the model gave to the correct token. The loss is <code>-ln(p)</code>.</p>
+          </div>
+        </div>
+        <div class="loss-layout">
+          <div class="loss-readout">
+            <label class="field full">
+              <span>Probability of correct token: <b id="loss-p-label">0.50</b></span>
+              <input id="loss-p" type="range" min="0.01" max="0.99" step="0.01" value="0.5">
+            </label>
+            <div class="big-metric"><b id="loss-value">0.693</b><span>loss for this position</span></div>
+          </div>
+          <svg class="loss-curve" id="loss-curve" viewBox="0 0 320 180" role="img" aria-label="Cross-entropy loss as a function of the probability assigned to the correct token">
+            <title>Cross-entropy loss, -ln(p)</title>
+          </svg>
+        </div>
+        <p class="demo-foot">A model that is right but unsure still pays a price. Training pushes probability mass onto the correct token and, implicitly, away from the wrong ones.</p>
+      </div>
+
+      <h3>Real next-token probabilities</h3>
+      <p>These are the actual top-12 probabilities from the published checkpoint, not illustrations. Choose a context, then adjust temperature and top-k to see how sampling changes. Temperature rescales the logits before softmax: below 1 makes the distribution sharper, above 1 makes it flatter. Top-k keeps only the k most likely tokens and renormalizes.</p>
+
+      <div class="demo" id="sample-demo">
+        <div class="demo-head">
+          <div>
+            <h3>Sample the next token</h3>
+            <p>The model’s real distribution after each prompt.</p>
+          </div>
+          <button class="btn primary" id="sample-next-btn" type="button">Sample next token</button>
+        </div>
+        <div class="sample-controls">
+          <label class="field">
+            <span>Context</span>
+            <select id="sample-context">
+              <option value="feel">i feel</option>
+              <option value="water">the water is</option>
+              <option value="activity">i was just</option>
+              <option value="love">i love</option>
+              <option value="food">i like the</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Temperature: <b id="temp-label">0.70</b></span>
+            <input id="temp-range" type="range" min="0.1" max="1.5" step="0.05" value="0.7">
+          </label>
+          <label class="field">
+            <span>Top-k: <b id="topk-label">5</b></span>
+            <input id="topk-range" type="range" min="1" max="12" step="1" value="5">
+          </label>
+        </div>
+        <div class="sample-result" aria-live="polite">
+          <span class="sampled-token" id="sampled-token">—</span>
+          <span class="muted" id="sampled-note">Press “Sample next token”.</span>
+        </div>
+        <div class="next-bars large" id="sample-bars"></div>
+        <p class="demo-foot">Probabilities are renormalized over the 12 displayed candidates. The model’s true vocabulary is 2,418 tokens. <span aria-hidden="true">·</span> marks a leading space.</p>
+      </div>
+
+      <h3>Background: gradient descent</h3>
+      <p>To reduce the loss, you need to know how each of the 8.7M weights affects it. That is the <strong>gradient</strong>: a vector of partial derivatives. <strong>Backpropagation</strong> computes it efficiently by applying the chain rule backwards through the network, reusing intermediate results from the forward pass.</p>
+      <p>The gradient points in the direction of steepest increase, so you step in the opposite direction. The <strong>learning rate</strong> controls step size. Too small and training crawls; too large and it overshoots and diverges. Play with it below — this is a one-dimensional analogy, while the real model has 8.7M dimensions.</p>
+
+      <div class="demo" id="gd-demo">
+        <div class="demo-head">
+          <div>
+            <h3>Gradient descent playground</h3>
+            <p>Minimize <code>f(w) = (w − 3)²</code>. The gradient is <code>2(w − 3)</code>.</p>
+          </div>
+        </div>
+        <div class="gd-layout">
+          <svg class="gd-chart" id="gd-chart" viewBox="0 0 420 240" role="img" aria-label="A convex loss curve with a point showing the current parameter value">
+            <title>Gradient descent on a convex loss curve</title>
+          </svg>
+          <div class="gd-controls">
+            <label class="field full">
+              <span>Learning rate: <b id="gd-lr-label">0.10</b></span>
+              <input id="gd-lr" type="range" min="0.01" max="1.2" step="0.01" value="0.1">
+            </label>
+            <div class="gd-metrics">
+              <div><span>w</span><b id="gd-w">-2.50</b></div>
+              <div><span>loss</span><b id="gd-loss">30.25</b></div>
+              <div><span>gradient</span><b id="gd-grad">-11.00</b></div>
+            </div>
+            <div class="gd-buttons">
+              <button class="btn primary" id="gd-step" type="button">Step</button>
+              <button class="btn" id="gd-run" type="button">Run 20 steps</button>
+              <button class="btn" id="gd-reset" type="button">Reset</button>
+            </div>
+            <p class="muted small" id="gd-status">Start at w = −2.50. Step downhill.</p>
+          </div>
+        </div>
+      </div>
+
+      <h3>The optimizer and schedule</h3>
+      <p>GuppyLM uses <strong>AdamW</strong>, which keeps a running average of past gradients and their squares so each weight gets its own adaptive step size. It also applies <strong>weight decay</strong> (0.1), a small pull toward zero that discourages huge weights.</p>
+      <p>The learning rate is not constant. It warms up linearly for 200 steps, then follows a cosine curve down to 3e-5. Warmup avoids large early updates when the model is random; the cosine decay lets the model settle. Gradients are clipped to a total norm of 1.0 so a single bad batch cannot blow up the weights.</p>
+
+      <div class="chart-card">
+        <div class="chart-head">
+          <h4>Learning-rate schedule</h4>
+          <span class="muted">3e-4 → 3e-5 · 200-step warmup, then cosine</span>
+        </div>
+        <svg id="lr-chart" viewBox="0 0 640 220" role="img" aria-label="Learning rate over training steps, showing linear warmup then cosine decay">
+          <title>Learning rate schedule</title>
+        </svg>
+      </div>
+
+      <div class="callout insight">
+        <p class="callout-title">The real numbers</p>
+        <p>After training, the published checkpoint scores <b>0.407</b> cross-entropy on the 3,000 held-out conversations. That is a perplexity of <b>1.50</b> — on average, the model behaves as if it were choosing among about 1.5 equally likely next tokens. This is impressively low, but only because the task is narrow and repetitive.</p>
+      </div>
+
+      <div class="callout engineer">
+        <p class="callout-title">Engineer’s translation</p>
+        <p>Training solves an optimization problem: minimize the average <code>-log p(correct next token)</code> over 57,000 examples. Backprop gives the gradient; AdamW takes the step; the schedule controls how big the steps are over time.</p>
+      </div>
+    </section>
+
+    <section id="training" class="chapter">
+      <p class="chapter-kicker">05 · The training loop</p>
+      <h2>One training step, line by line</h2>
+      <p class="lead">The whole loop is about 80 lines. Step through the actual code from <code>guppylm/train.py</code>.</p>
+
+      <div class="code-stepper">
+        <div class="code-steps" id="code-steps" role="tablist" aria-label="Training step stages"></div>
+        <div class="code-view">
+          <pre class="code" id="train-code" aria-live="polite"><code></code></pre>
+          <div class="code-note" id="code-note"></div>
+        </div>
+      </div>
+
+      <h3>What one step means in numbers</h3>
+      <div class="data-facts">
+        <div class="fact"><b>32</b><span>sequences per batch</span></div>
+        <div class="fact"><b>128</b><span>max tokens per sequence</span></div>
+        <div class="fact"><b>10,000</b><span>optimizer steps</span></div>
+        <div class="fact"><b>5.6</b><span>passes over the 57k training set</span></div>
+      </div>
+      <p>One step sees 32 conversations, each truncated to at most 128 tokens. Over 10,000 steps the model sees 320,000 sequences, which is about 5.6 passes over the 57,000-example training set. This is why “steps” and “epochs” are different: an epoch is one full pass; a step is one batch and one weight update.</p>
+
+      <h3>The hyperparameters</h3>
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr><th>Setting</th><th class="num">Value</th><th>What it controls</th></tr></thead>
+          <tbody>
+            <tr><td>batch_size</td><td class="num">32</td><td>examples per weight update</td></tr>
+            <tr><td>learning_rate</td><td class="num">3e-4</td><td>peak step size</td></tr>
+            <tr><td>min_lr</td><td class="num">3e-5</td><td>final step size after cosine decay</td></tr>
+            <tr><td>warmup_steps</td><td class="num">200</td><td>linear ramp before decay</td></tr>
+            <tr><td>max_steps</td><td class="num">10,000</td><td>total optimizer steps</td></tr>
+            <tr><td>weight_decay</td><td class="num">0.1</td><td>pull toward small weights</td></tr>
+            <tr><td>grad_clip</td><td class="num">1.0</td><td>maximum gradient norm</td></tr>
+            <tr><td>dropout</td><td class="num">0.1</td><td>fraction of activations dropped in training</td></tr>
+            <tr><td>eval_interval</td><td class="num">200</td><td>steps between held-out evaluations</td></tr>
+            <tr><td>seed</td><td class="num">42</td><td>reproducibility</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>A real training curve</h3>
+      <p>This chart is the first 500 steps of a real run using the same code, data, and hyperparameters on CPU. The full run is 10,000 steps; the curve is truncated to keep this page fast to produce. Train loss is per step; held-out loss is measured every 50 steps.</p>
+      <div class="chart-card">
+        <div class="chart-head">
+          <h4>Loss over the first 500 steps</h4>
+          <span class="muted" id="curve-note">real run, CPU</span>
+        </div>
+        <svg id="curve-chart" viewBox="0 0 640 260" role="img" aria-label="Training and held-out loss falling over the first 500 steps">
+          <title>Training and held-out loss</title>
+        </svg>
+        <div class="legend" id="curve-legend"></div>
+      </div>
+      <p>The shape is the important part: a rapid drop from random guessing (loss near 8.5, close to ln 4096 ≈ 8.32) toward the low-loss regime, then a slow grind. The published 10,000-step run continues this grind down to 0.407.</p>
+
+      <h3>What gets saved</h3>
+      <p>Every 200 steps the loop evaluates on the held-out set and saves <code>best_model.pt</code> if the held-out loss improved. It also saves periodic checkpoints and a final model. A checkpoint contains the state dictionary (all 8.7M weights), the model config, the step number, and the evaluation loss. Loading is just constructing the same architecture and copying the numbers in.</p>
+
+      <div class="callout engineer">
+        <p class="callout-title">Engineer’s translation</p>
+        <p>A step is: get a batch → forward pass → loss → <code>backward()</code> → clip gradients → optimizer step → zero gradients. Ten thousand of those, with a schedule on the step size, and you have a fish.</p>
+      </div>
+    </section>
+
+    <section id="generation" class="chapter">
+      <p class="chapter-kicker">06 · Inference</p>
+      <h2>From weights to a reply</h2>
+      <p class="lead">Generation is a while loop around the forward pass. The model produces one token, appends it to the input, and runs again. The only state is the growing sequence.</p>
+
+      <h3>The prompt format</h3>
+      <p>GuppyLM is trained on ChatML, a simple text convention that marks who is speaking. The inference code builds the prompt by concatenating the roles, then leaves the assistant header open for the model to continue.</p>
+      <pre class="code static"><code>&lt;|im_start|&gt;user
+hi guppy&lt;|im_end|&gt;
+&lt;|im_start|&gt;assistant
+hello. the water is nice today.&lt;|im_end|&gt;</code></pre>
+      <p>Because every training example has this shape, the model learns that after an assistant header it should produce fish text, and that <code>&lt;|im_end|&gt;</code> means “stop”. There is no separate system prompt and no instruction-tuning stage; the personality is entirely in the weights.</p>
+
+      <h3>The sampling loop</h3>
+      <ol class="steps-list">
+        <li>Tokenize the prompt into IDs.</li>
+        <li>Run the forward pass. Take the logits at the last position.</li>
+        <li>Divide by temperature; optionally keep only the top-k logits.</li>
+        <li>Softmax to probabilities; sample one token.</li>
+        <li>Append it. If it is <code>&lt;|im_end|&gt;</code>, stop; otherwise repeat.</li>
+        <li>Decode the generated IDs back to text and truncate at the end marker.</li>
+      </ol>
+      <p>The default inference settings are temperature 0.7, top-k 50, and at most 64 new tokens. Lower temperature makes the fish more predictable; higher temperature makes it more likely to wander into nonsense.</p>
+
+      <h3>Why multi-turn chat degrades</h3>
+      <p>The context window is 128 tokens. Every prior turn consumes some of it. By turn three or four, the earliest instructions and the original topic have fallen out of the window, and the model is conditioning on a truncated conversation. The repository’s own documentation recommends single-prompt use for this reason.</p>
+
+      <h3>Shipping it: quantization and ONNX</h3>
+      <p>The FP32 weights are about 34.9 MB. The exported ONNX model stores them as 8-bit integers (uint8 quantization), which brings the download to about 10.5 MB. The browser demo runs that model locally through WebAssembly — no server, no API key. Quantization is lossy in principle, but at this scale and for this narrow distribution the quality loss is small.</p>
+
+      <div class="callout engineer">
+        <p class="callout-title">Engineer’s translation</p>
+        <p>Inference is <code>while not done: logits = model(ids); next = sample(softmax(logits / T)); ids.append(next)</code>. No gradients, no weight updates. The model is a pure function of the token sequence.</p>
+      </div>
+    </section>
+
+    <section id="limits" class="chapter">
+      <p class="chapter-kicker">07 · Results and limits</p>
+      <h2>What this model learned, and what it did not</h2>
+      <p class="lead">GuppyLM is a successful demonstration of the full pipeline. It is not a general assistant, and the difference is instructive.</p>
+
+      <h3>What the numbers say</h3>
+      <div class="data-facts">
+        <div class="fact"><b>0.407</b><span>held-out cross-entropy</span></div>
+        <div class="fact"><b>1.50</b><span>perplexity (e^0.407)</span></div>
+        <div class="fact"><b>8.7M</b><span>parameters</span></div>
+        <div class="fact"><b>128</b><span>tokens of context</span></div>
+      </div>
+      <p>A perplexity of 1.50 means the model is rarely surprised by the next token in the held-out set. That sounds impressive until you remember what the held-out set is: more samples from the same template generator. The model has learned the generator’s distribution extremely well. It has not learned English, reasoning, or facts about the world.</p>
+
+      <h3>Why the low loss is not general intelligence</h3>
+      <p>Nineteen percent of the replies are unique, so the model can legitimately memorize and interpolate among a few thousand sentence shapes. When you ask something outside the 60 topics, there is no learned behavior to fall back on; the model will still produce fish-flavored text, but it will not answer the question. That is the expected outcome of training on a narrow synthetic distribution.</p>
+
+      <h3>Scale, for calibration</h3>
+      <p>Parameter counts are not a perfect measure of capability, but they are a useful order-of-magnitude check. GuppyLM is about 14× smaller than GPT-2 small and roughly 20,000× smaller than GPT-3.</p>
+      <div class="scale-chart" id="scale-chart" aria-label="Log-scale comparison of parameter counts">
+        <div class="scale-row"><span class="scale-name">GuppyLM</span><span class="scale-bar"><i style="width:61.7%"></i></span><span class="scale-val">8.7M</span></div>
+        <div class="scale-row"><span class="scale-name">GPT-2 small</span><span class="scale-bar"><i style="width:72.0%"></i></span><span class="scale-val">124M</span></div>
+        <div class="scale-row"><span class="scale-name">GPT-3</span><span class="scale-bar"><i style="width:100%"></i></span><span class="scale-val">175B</span></div>
+        <p class="demo-foot">Bars are log-scaled. Public approximate parameter counts.</p>
+      </div>
+
+      <h3>What would make it a general model</h3>
+      <p>Three things, roughly in order of importance: far more diverse data (the current corpus is one character in one tank), much more capacity and compute, and a longer context window. Instruction tuning and preference optimization would come after that. GuppyLM deliberately omits all of it so the mechanics stay legible.</p>
+
+      <div class="callout insight">
+        <p class="callout-title">The honest summary</p>
+        <p>GuppyLM is a complete, reproducible LLM pipeline in miniature. It demonstrates data generation, tokenizer training, a transformer forward pass, backpropagation, optimization, evaluation, quantization, and deployment. Its low loss measures fidelity to a narrow synthetic distribution, not intelligence.</p>
+      </div>
+    </section>
+
+    <section id="glossary" class="chapter">
+      <p class="chapter-kicker">08 · Reference</p>
+      <h2>Glossary</h2>
+      <p class="lead">Plain-language definitions for every term used above. Filter by typing.</p>
+      <label class="field full glossary-search">
+        <span class="sr-only">Filter glossary</span>
+        <input id="glossary-search" type="search" placeholder="Filter terms…" autocomplete="off">
+      </label>
+      <div class="glossary-grid" id="glossary-grid"></div>
+      <p class="muted small" id="glossary-empty" hidden>No terms match that filter.</p>
+    </section>
+
+    <section id="quiz" class="chapter">
+      <p class="chapter-kicker">09 · Check yourself</p>
+      <h2>Eight questions</h2>
+      <p class="lead">No score is stored. Each answer explains itself.</p>
+      <div id="quiz-list"></div>
+      <div class="quiz-score" id="quiz-score" aria-live="polite" hidden></div>
+      <button class="btn" id="quiz-reset" type="button">Reset quiz</button>
+    </section>
+
+    <section class="cheat" id="cheatsheet">
+      <h2>If you remember ten things</h2>
+      <ol>
+        <li>The data is synthetic: Python templates, not web text.</li>
+        <li>A tokenizer turns text into integer IDs; it is learned from the same corpus.</li>
+        <li>GuppyLM has 8,726,016 weights, and those weights are the entire model.</li>
+        <li>A transformer block is attention plus a feed-forward network, with residuals and LayerNorm.</li>
+        <li>Attention lets each token take a weighted average of earlier tokens.</li>
+        <li>Training objective: make the correct next token more probable, measured by <code>-ln(p)</code>.</li>
+        <li>Backpropagation computes the gradient; the optimizer takes the step.</li>
+        <li>Batch size, learning rate, warmup, and weight decay are the main knobs.</li>
+        <li>Generation samples one token at a time from softmax(logits / temperature).</li>
+        <li>Low loss on a narrow distribution is easy; generalization is the hard part.</li>
+      </ol>
+      <p class="cheat-foot">Built from the <a href="https://github.com/arman-bd/guppylm" target="_blank" rel="noopener">arman-bd/guppylm</a> repository, its <a href="https://huggingface.co/datasets/arman-bd/guppylm-60k-generic" target="_blank" rel="noopener">dataset</a>, and its <a href="https://huggingface.co/arman-bd/guppylm-9M" target="_blank" rel="noopener">published weights</a>. Real attention, probabilities, and loss values were extracted with PyTorch; the 500-step curve is a real run of the repo’s training loop on CPU.</p>
+    </section>
+  </main>
+</div>
+
+<footer class="site-foot">
+  <p>An independent explainer. GuppyLM is MIT-licensed and created by arman-bd.</p>
+</footer>
+
+<script src="data/tokenizer.js"></script>
+<script src="data/samples.js"></script>
+<script src="data/insights.js"></script>
+<script src="data/curve.js"></script>
+<script src="data/train_code.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
