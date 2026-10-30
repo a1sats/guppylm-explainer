@@ -1,5 +1,7 @@
 # GuppyLM, explained
 
+Live site: https://a1sats.github.io/guppylm-explainer/
+
 An interactive, standalone explainer for [GuppyLM](https://github.com/arman-bd/guppylm) — a ~9M-parameter language model that talks like a small fish.
 
 The site starts with the whole pipeline in one picture (data → tokenizer → model → training → inference), then goes deep into each stage. It is written for engineers who have not trained a model before: every term is defined, and every interactive demo is grounded in the actual project.
